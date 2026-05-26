@@ -17,20 +17,20 @@ TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = 6818257079
 
 # ================= STORAGE =================
-pending_sewa = {}        # user memilih paket
-pending_payment = {}     # menunggu approval owner
+pending_sewa = {}        # user pilih paket
+pending_payment = {}     # nunggu approval owner (WAJIB STRING KEY)
 
-premium_db = {}          # multi group premium storage
+premium_db = {}          # multi group premium
 
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 BOT SEWA AKTIF\n\n/sewabot untuk mulai"
+        "🤖 BOT SEWA AKTIF\n\nKetik /sewabot untuk mulai"
     )
 
 
-# ================= MENU SEWA =================
+# ================= SEWA MENU =================
 async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📆 Mingguan", callback_data="paket_mingguan")],
@@ -38,7 +38,7 @@ async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "PILIH PAKET SEWA:",
+        "PILIH PAKET:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -78,7 +78,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    uid = query.from_user.id
+    uid = str(query.from_user.id)      # 🔥 FIX: STRING CONSISTENT
     chat_id = str(query.message.chat.id)
     data = query.data
 
@@ -137,6 +137,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d = pending_sewa[uid]
         total_days = d["qty"] * d["days"]
 
+        # 🔥 FIX: SIMPAN PAKE STRING UID
         pending_payment[uid] = {
             "chat_id": chat_id,
             "name": query.from_user.first_name,
@@ -171,10 +172,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ================= OWNER APPROVE =================
     elif data.startswith("approve_"):
-        if uid != OWNER_ID:
+        if query.from_user.id != OWNER_ID:
             return
 
-        target_uid = data.split("_")[1]
+        target_uid = str(data.split("_")[1])   # 🔥 FIX STRING
 
         if target_uid not in pending_payment:
             return await query.edit_message_text("DATA TIDAK DITEMUKAN")
@@ -202,10 +203,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ================= OWNER REJECT =================
     elif data.startswith("reject_"):
-        if uid != OWNER_ID:
+        if query.from_user.id != OWNER_ID:
             return
 
-        target_uid = data.split("_")[1]
+        target_uid = str(data.split("_")[1])   # 🔥 FIX STRING
 
         if target_uid in pending_payment:
             del pending_payment[target_uid]
