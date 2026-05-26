@@ -1,6 +1,5 @@
 import os
 import time
-import asyncio
 import logging
 from pymongo import MongoClient
 
@@ -21,7 +20,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
 OWNER_ID = 6818257079
-OWNER_USERNAME = "@KINGZAAASLI"
 
 client = MongoClient(MONGO_URI)
 db = client["telegram_bot"]
@@ -31,15 +29,23 @@ groups_col = db["groups"]
 pending_sewa = {}
 pending_payment = {}
 pending_group = {}
-pending_owner_approval = {}
+pending_owner = {}
+
+# ================= SAFE EDIT =================
+async def safe_edit(q, text, keyboard=None):
+    try:
+        await q.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+        )
+    except:
+        await q.message.reply_text(text)
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 BOT SEWA AKTIF\n\nGunakan /sewabot untuk mulai"
-    )
+    await update.message.reply_text("BOT AKTIF\n/sewabot untuk mulai")
 
-# ================= SEWA MENU =================
+# ================= SEWA =================
 async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📆 Mingguan", callback_data="mingguan")],
@@ -53,21 +59,14 @@ async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= CEK ID GROUP =================
 async def cekidgrup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    chat_id = str(chat.id)
-
-    text = (
-        "📌 INFO GROUP ID\n\n"
-        f"🆔 ID GROUP:\n`{chat_id}`\n\n"
-        "👇 tekan tombol untuk copy"
-    )
+    chat_id = str(update.effective_chat.id)
 
     keyboard = [
         [InlineKeyboardButton("📋 COPY ID", callback_data=f"copy_{chat_id}")]
     ]
 
     await update.message.reply_text(
-        text,
+        f"🆔 ID GROUP:\n`{chat_id}`",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -75,83 +74,90 @@ async def cekidgrup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= CALLBACK =================
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    await q.answer()  # 🔥 WAJIB (anti tombol mati)
 
     uid = q.from_user.id
     data = q.data
 
-    # ================= COPY ID =================
+    # ================= COPY =================
     if data.startswith("copy_"):
-        chat_id = data.split("_", 1)[1]
-        await q.answer(text=f"ID: {chat_id}", show_alert=True)
+        await q.answer(text=data.split("_")[1], show_alert=True)
         return
 
     # ================= PILIH PAKET =================
-    if data == "mingguan":
-        pending_sewa[uid] = {"paket": "MINGGUAN", "harga": 5000, "days": 7}
-
-    elif data == "bulanan":
-        pending_sewa[uid] = {"paket": "BULANAN", "harga": 15000, "days": 30}
-
-    # ================= BUY =================
-    elif data == "buy":
-        if uid not in pending_sewa:
-            return
+    if data in ["mingguan", "bulanan"]:
+        if data == "mingguan":
+            pending_sewa[uid] = {"paket": "MINGGUAN", "harga": 5000, "days": 7}
+        else:
+            pending_sewa[uid] = {"paket": "BULANAN", "harga": 15000, "days": 30}
 
         d = pending_sewa[uid]
 
-        text = (
-            "💳 PAYMENT INFO\n\n"
-            f"📦 Paket: {d['paket']}\n"
-            f"💰 Harga: Rp{d['harga']:,}\n\n"
-            "💳 DANA: 085609264485\n"
-            "💳 GOPAY: -\n"
-            "💳 SEABANK: -\n\n"
-            "👉 Klik jika sudah bayar"
+        keyboard = [[InlineKeyboardButton("🛒 BUY", callback_data="buy")]]
+
+        await safe_edit(
+            q,
+            f"📦 {d['paket']}\n💰 Rp{d['harga']:,}\n\nKlik BUY untuk lanjut",
+            keyboard
         )
+        return
+
+    # ================= BUY =================
+    if data == "buy":
+        if uid not in pending_sewa:
+            return await q.answer("Session habis, ulangi /sewabot", show_alert=True)
+
+        d = pending_sewa[uid]
+
+        pending_payment[uid] = d
 
         keyboard = [
             [InlineKeyboardButton("✅ SUDAH BAYAR", callback_data="paid")]
         ]
 
-        pending_payment[uid] = d
+        text = (
+            "💳 PAYMENT\n\n"
+            f"📦 {d['paket']}\n"
+            f"💰 Rp{d['harga']:,}\n\n"
+            "DANA: 085609264485\n"
+            "GOPAY: -"
+        )
 
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await safe_edit(q, text, keyboard)
         return
 
-    # ================= SUDAH BAYAR =================
-    elif data == "paid":
+    # ================= PAID =================
+    if data == "paid":
         if uid not in pending_payment:
-            return await q.edit_message_text("❌ Transaksi tidak ditemukan")
+            return await q.answer("Data tidak ditemukan", show_alert=True)
 
         pending_group[uid] = pending_payment[uid]
 
-        await q.edit_message_text(
-            "📩 KIRIM ID GROUP ANDA SEKARANG\n\nContoh: -100123456789"
+        await safe_edit(
+            q,
+            "📩 KIRIM ID GROUP SEKARANG\ncontoh: -100123456789"
         )
         return
 
-    # ================= APPROVE OWNER =================
-    elif data.startswith("approve_"):
+    # ================= OWNER APPROVE =================
+    if data.startswith("approve_"):
         if uid != OWNER_ID:
             return
 
         user_id = int(data.split("_")[1])
-        req = pending_owner_approval.get(user_id)
+        req = pending_owner.get(user_id)
 
         if not req:
-            return await q.edit_message_text("DATA TIDAK DITEMUKAN")
+            return await q.edit_message_text("DATA HILANG")
 
         gid = req["group_id"]
 
-        g = groups_col.find_one({"chat_id": str(gid)})
-        if not g:
-            g = {"chat_id": str(gid), "premium_users": {}}
+        g = groups_col.find_one({"chat_id": str(gid)}) or {
+            "chat_id": str(gid),
+            "premium_users": {}
+        }
 
-        expire = time.time() + (req["days"] * 86400)
-
-        if "premium_users" not in g:
-            g["premium_users"] = {}
+        expire = time.time() + req["days"] * 86400
 
         g["premium_users"][str(user_id)] = {
             "name": req["name"],
@@ -165,28 +171,24 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upsert=True
         )
 
-        await context.bot.send_message(
-            user_id,
-            "✅ PAYMENT DISETUJUI OWNER\nPREMIUM AKTIF 🔥"
-        )
+        await context.bot.send_message(user_id, "✅ APPROVED PREMIUM")
+        pending_owner.pop(user_id, None)
 
-        pending_owner_approval.pop(user_id, None)
-        return await q.edit_message_text("APPROVED")
+        await q.edit_message_text("APPROVED")
+        return
 
-    # ================= REJECT OWNER =================
-    elif data.startswith("reject_"):
+    # ================= REJECT =================
+    if data.startswith("reject_"):
         if uid != OWNER_ID:
             return
 
         user_id = int(data.split("_")[1])
 
-        await context.bot.send_message(
-            user_id,
-            "❌ PAYMENT DITOLAK OWNER"
-        )
+        await context.bot.send_message(user_id, "❌ PAYMENT DITOLAK")
+        pending_owner.pop(user_id, None)
 
-        pending_owner_approval.pop(user_id, None)
-        return await q.edit_message_text("REJECTED")
+        await q.edit_message_text("REJECTED")
+        return
 
 # ================= HANDLE GROUP ID =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -196,11 +198,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in pending_group:
         return
 
-    group_id = msg.text
     data = pending_group.pop(uid)
 
-    pending_owner_approval[uid] = {
-        "group_id": group_id,
+    pending_owner[uid] = {
+        "group_id": msg.text,
         "paket": data["paket"],
         "days": data["days"],
         "name": msg.from_user.first_name
@@ -208,47 +209,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [
-            InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_{uid}"),
-            InlineKeyboardButton("❌ REJECT", callback_data=f"reject_{uid}")
+            InlineKeyboardButton("APPROVE", callback_data=f"approve_{uid}"),
+            InlineKeyboardButton("REJECT", callback_data=f"reject_{uid}")
         ]
     ]
 
     await context.bot.send_message(
         OWNER_ID,
-        f"💰 KONFIRMASI PEMBAYARAN\n\n"
-        f"User: {msg.from_user.first_name}\n"
-        f"ID: {uid}\n"
-        f"Group: {group_id}\n"
-        f"Paket: {data['paket']}",
+        f"💰 KONFIRMASI\nUser: {msg.from_user.first_name}\nID: {uid}\nGroup: {msg.text}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-    await msg.reply_text("⏳ Menunggu konfirmasi owner...")
-
-# ================= LIST PREMIUM =================
-async def listpremium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != OWNER_ID:
-        return await update.message.reply_text("KHUSUS OWNER")
-
-    text = "📌 PREMIUM USERS\n\n"
-
-    for g in groups_col.find():
-        for uid, d in g.get("premium_users", {}).items():
-            sisa = int((d["expire"] - time.time()) / 86400)
-            text += f"{d['name']} | {uid} | {g['chat_id']} | {sisa} hari\n"
-
-    await update.message.reply_text(text)
+    await msg.reply_text("⏳ Menunggu approval owner...")
 
 # ================= MAIN =================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("sewabot", sewabot))
-app.add_handler(CommandHandler("listpremium", listpremium))
 app.add_handler(CommandHandler("cekidgrup", cekidgrup))
 
 app.add_handler(CallbackQueryHandler(callback_router))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-print("BOT KESUK RUNNING...")
+print("BOT RUNNING (ANTI BUG VERSION)")
 app.run_polling()
