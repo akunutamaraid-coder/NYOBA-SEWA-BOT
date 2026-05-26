@@ -3,7 +3,6 @@ import time
 import asyncio
 import logging
 
-from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -17,247 +16,183 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
 
 OWNER_ID = 6818257079
 OWNER_USERNAME = "@KINGZAAASLI"
 
-# ================= DATABASE =================
-client = MongoClient(MONGO_URI)
-db = client["telegram_bot"]
-
-payments_col = db["payments"]
-premium_col = db["premium_users"]
+# ================= MEMORY =================
+pending_sewa = {}
+pending_payment = {}
+pending_group_input = {}   # 🔥 STEP INPUT ID GRUP
+pending_owner_confirm = {}  # 🔥 OWNER APPROVAL
+premium_users = {}
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 KESUK BOT AKTIF\n\n/sewabot untuk mulai"
-    )
+    await update.message.reply_text("🤖 BOT AKTIF\n/sewabot untuk mulai")
 
-# ================= SEWABOT =================
+# ================= SEWA MENU =================
 async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.message.chat.type == "private":
+        text = "SILAHKAN MASUKAN BOT INI DAN KASIH AKSES ALL ATAU DELETE PESAN"
+    else:
+        text = "SILAHKAN CHAT @KESUKBOT"
+
     keyboard = [
-        [InlineKeyboardButton("📆 Mingguan", callback_data="paket_mingguan")],
-        [InlineKeyboardButton("📅 Bulanan", callback_data="paket_bulanan")]
+        [InlineKeyboardButton("📆 Mingguan", callback_data="mingguan")],
+        [InlineKeyboardButton("📅 Bulanan", callback_data="bulanan")]
     ]
 
-    await update.message.reply_text(
-        "💎 PILIH PAKET SEWA:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ================= CALLBACK =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
     uid = q.from_user.id
     data = q.data
 
-    # ================= PILIH PAKET =================
-    if data in ["paket_mingguan", "paket_bulanan"]:
+    # ========== PILIH PAKET ==========
+    if data in ["mingguan", "bulanan"]:
 
-        paket = "MINGGUAN" if data == "paket_mingguan" else "BULANAN"
-        harga = 5000 if paket == "MINGGUAN" else 15000
-        days = 7 if paket == "MINGGUAN" else 30
+        pending_sewa[uid] = {
+            "paket": data,
+            "qty": 1,
+            "harga": 5000 if data == "mingguan" else 15000,
+            "days": 7 if data == "mingguan" else 30
+        }
 
-        payments_col.update_one(
-            {"uid": uid},
-            {"$set": {
-                "uid": uid,
-                "paket": paket,
-                "harga": harga,
-                "qty": 1,
-                "days": days,
-                "status": "pending"
-            }},
-            upsert=True
-        )
-
-        keyboard = [
+        kb = [
             [
-                InlineKeyboardButton("➖", callback_data="min"),
-                InlineKeyboardButton("1", callback_data="none"),
-                InlineKeyboardButton("➕", callback_data="plus")
+                InlineKeyboardButton("-", callback_data="min"),
+                InlineKeyboardButton("1", callback_data="noop"),
+                InlineKeyboardButton("+", callback_data="plus"),
             ],
             [InlineKeyboardButton("🛒 BUY", callback_data="buy")]
         ]
 
-        await q.edit_message_text(
-            f"📦 {paket}\n💰 Rp{harga:,}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
+        return await q.edit_message_text("Pilih qty:", reply_markup=InlineKeyboardMarkup(kb))
 
-    # ================= QTY =================
-    if data in ["plus", "min"]:
-        p = payments_col.find_one({"uid": uid})
-        if not p:
-            return
-
-        qty = p.get("qty", 1)
-
+    # ========== QTY ==========
+    if uid in pending_sewa:
         if data == "plus":
-            qty += 1
-        elif data == "min" and qty > 1:
-            qty -= 1
+            pending_sewa[uid]["qty"] += 1
 
-        payments_col.update_one({"uid": uid}, {"$set": {"qty": qty}})
+        elif data == "min":
+            if pending_sewa[uid]["qty"] > 1:
+                pending_sewa[uid]["qty"] -= 1
 
-        total = qty * p["harga"]
+        elif data == "buy":
+            d = pending_sewa[uid]
+            total = d["qty"] * d["harga"]
 
-        keyboard = [
+            pending_payment[uid] = d
+
+            kb = [[InlineKeyboardButton("✅ SUDAH BAYAR", callback_data="paid")]]
+
+            return await q.edit_message_text(
+                f"💳 PAYMENT\nTotal: Rp{total:,}",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+        d = pending_sewa[uid]
+        kb = [
             [
-                InlineKeyboardButton("➖", callback_data="min"),
-                InlineKeyboardButton(str(qty), callback_data="none"),
-                InlineKeyboardButton("➕", callback_data="plus")
+                InlineKeyboardButton("-", callback_data="min"),
+                InlineKeyboardButton(str(d["qty"]), callback_data="noop"),
+                InlineKeyboardButton("+", callback_data="plus"),
             ],
             [InlineKeyboardButton("🛒 BUY", callback_data="buy")]
         ]
 
-        await q.edit_message_text(
-            f"📦 {p['paket']}\nQty: {qty}\nTotal: Rp{total:,}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
+        return await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
 
-    # ================= BUY =================
-    if data == "buy":
-        p = payments_col.find_one({"uid": uid})
-        if not p:
-            return
+    # ========== PAID ==========
+    if data == "paid":
 
-        total = p["qty"] * p["harga"]
+        if uid not in pending_payment:
+            return await q.edit_message_text("Payment tidak valid")
 
-        payments_col.update_one(
-            {"uid": uid},
-            {"$set": {"status": "waiting"}}
-        )
+        pending_group_input[uid] = pending_payment[uid]
+        pending_payment.pop(uid)
 
-        keyboard = [
-            [InlineKeyboardButton("📋 KONFIRMASI PEMBAYARAN", callback_data="confirm_owner")]
-        ]
+        return await q.edit_message_text("📩 SILAHKAN KIRIM ID GRUP")
 
-        await q.edit_message_text(
-            f"""💳 PAYMENT
+    # ========== OWNER APPROVE ==========
+    if data.startswith("approve_") or data.startswith("reject_"):
 
-DANA: 085609264485
-GOPAY: -
-SEABANK: -
-
-💰 TOTAL: Rp{total:,}
-
-Klik jika sudah transfer""",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    # ================= CONFIRM OWNER =================
-    if data == "confirm_owner":
-        p = payments_col.find_one({"uid": uid})
-        if not p:
-            return
-
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ TERIMA", callback_data=f"acc_{uid}"),
-                InlineKeyboardButton("❌ TOLAK", callback_data=f"rej_{uid}")
-            ]
-        ]
-
-        await context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=f"""
-🔥 PAYMENT MASUK
-
-User ID: {uid}
-Paket: {p['paket']}
-Qty: {p['qty']}
-Total: Rp{p['qty'] * p['harga']:,}
-""",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-        await q.edit_message_text("⏳ Menunggu konfirmasi owner...")
-        return
-
-    # ================= OWNER ACTION =================
-    if data.startswith("acc_") or data.startswith("rej_"):
         if uid != OWNER_ID:
-            return
+            return await q.answer("Hanya owner", show_alert=True)
 
-        target = int(data.split("_")[1])
-        p = payments_col.find_one({"uid": target})
-        if not p:
-            return
+        user_id = int(data.split("_")[1])
 
-        if data.startswith("acc_"):
-            payments_col.update_one(
-                {"uid": target},
-                {"$set": {"status": "approved"}}
-            )
+        req = pending_owner_confirm.get(user_id)
+        if not req:
+            return await q.edit_message_text("Request sudah expired")
 
-            await context.bot.send_message(
-                chat_id=target,
-                text="✅ PAYMENT DITERIMA\n\nKirim ID GRUP kamu sekarang:"
-            )
+        if data.startswith("approve_"):
+
+            premium_users[user_id] = {
+                "group_id": req["group_id"],
+                "expire": time.time() + (req["days"] * 86400)
+            }
+
+            await context.bot.send_message(user_id, "✅ PAYMENT DITERIMA\nPREMIUM AKTIF")
+
+            pending_owner_confirm.pop(user_id)
+
+            return await q.edit_message_text("DI APPROVE")
 
         else:
-            payments_col.delete_one({"uid": target})
-            await context.bot.send_message(
-                chat_id=target,
-                text="❌ PAYMENT DITOLAK"
-            )
+            await context.bot.send_message(user_id, "❌ PAYMENT DITOLAK")
+            pending_owner_confirm.pop(user_id)
 
-# ================= INPUT ID GRUP (FIX BUG DIEM) =================
+            return await q.edit_message_text("DITOLAK")
+
+# ================= HANDLE ID GRUP =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg:
+    uid = update.message.from_user.id
+    text = update.message.text
+
+    if uid not in pending_group_input:
         return
 
-    uid = msg.from_user.id
-    text = msg.text.strip()
+    req = pending_group_input.pop(uid)
 
-    p = payments_col.find_one({"uid": uid, "status": "approved"})
-    if not p:
-        return
+    pending_owner_confirm[uid] = {
+        "group_id": text,
+        "days": req["days"]
+    }
 
-    premium_col.update_one(
-        {"uid": uid},
-        {"$set": {
-            "uid": uid,
-            "group_id": text,
-            "paket": p["paket"],
-            "expire": time.time() + (p["days"] * 86400)
-        }},
-        upsert=True
+    kb = [
+        [
+            InlineKeyboardButton("TERIMA", callback_data=f"approve_{uid}"),
+            InlineKeyboardButton("TOLAK", callback_data=f"reject_{uid}")
+        ]
+    ]
+
+    await context.bot.send_message(
+        OWNER_ID,
+        f"REQUEST PREMIUM\nUSER: {uid}\nGROUP: {text}",
+        reply_markup=InlineKeyboardMarkup(kb)
     )
 
-    payments_col.delete_one({"uid": uid})
-
-    await msg.reply_text("🎉 PREMIUM AKTIF\nID GRUP BERHASIL DISIMPAN")
+    await update.message.reply_text("⏳ MENUNGGU APPROVAL OWNER")
 
 # ================= LIST PREMIUM =================
 async def listpremium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if update.message.from_user.id != OWNER_ID:
         return await update.message.reply_text("KHUSUS OWNER")
 
-    data = premium_col.find()
-    text = "📌 LIST PREMIUM:\n\n"
+    text = "LIST PREMIUM:\n\n"
 
-    for d in data:
-        if d["expire"] == -1:
-            status = "SELAMANYA"
-        else:
-            sisa = int((d["expire"] - time.time()) / 86400)
-            status = f"{sisa} hari"
+    for uid, data in premium_users.items():
+        sisa = int((data["expire"] - time.time()) / 86400)
 
-        text += (
-            f"👤 {d['uid']}\n"
-            f"📦 {d['paket']}\n"
-            f"⏳ {status}\n\n"
-        )
+        text += f"{uid} | {data['group_id']} | {sisa} hari\n"
 
     await update.message.reply_text(text)
 
@@ -268,10 +203,8 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("sewabot", sewabot))
 app.add_handler(CommandHandler("listpremium", listpremium))
 
-app.add_handler(CallbackQueryHandler(callback))
-
-# 🔥 FIX PENTING: ini biang bug kamu tadi
+app.add_handler(CallbackQueryHandler(callback_router))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-print("KESUK BOT RUNNING...")
+print("BOT RUNNING...")
 app.run_polling()
