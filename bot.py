@@ -8,7 +8,9 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes
+    MessageHandler,
+    ContextTypes,
+    filters
 )
 
 from pymongo import MongoClient
@@ -22,14 +24,16 @@ MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = 6818257079
 OWNER_USERNAME = "@KINGZAAASLI"
 
-# ================= DATABASE =================
+# ================= DB =================
 client = MongoClient(MONGO_URI)
 db = client["telegram_bot"]
-groups_col = db["groups"]
+premium_col = db["premium_users"]
 
 # ================= MEMORY =================
 pending_sewa = {}
 pending_payment = {}
+pending_approval = {}
+waiting_group_id = {}
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -50,18 +54,20 @@ async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================= AUTO CANCEL =================
-async def auto_cancel(uid: int):
+async def auto_cancel(uid: str):
     await asyncio.sleep(300)
-    pending_payment.pop(uid, None)
-    pending_sewa.pop(uid, None)
+
+    if uid in pending_payment:
+        pending_payment.pop(uid, None)
+        pending_sewa.pop(uid, None)
 
 # ================= CALLBACK =================
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    uid = query.from_user.id
     data = query.data
+    uid = str(query.from_user.id)
 
     # ================= PILIH PAKET =================
     if data == "paket_mingguan":
@@ -104,54 +110,81 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(auto_cancel(uid))
 
         keyboard = [
-            [InlineKeyboardButton("✅ SUDAH TRANSFER", callback_data="paid")]
+            [InlineKeyboardButton("💳 KONFIRMASI PEMBAYARAN", callback_data="confirm_pay")]
         ]
 
         await query.edit_message_text(
-            f"💳 PAYMENT\n\n"
-            f"📦 {d['paket']}\n"
-            f"📊 {d['qty']}x\n"
-            f"💰 Rp{total:,}\n\n"
-            f"⏳ Auto cancel 5 menit",
+            "💰 PAYMENT\n\n"
+            f"📦 Paket: {d['paket']}\n"
+            f"📊 Qty: {d['qty']}\n"
+            f"💰 Total: Rp{total:,}\n\n"
+            "💳 DANA: 085609264485\n"
+            "GOPAY: -\n"
+            "SEABANK: -\n\n"
+            "Klik jika sudah transfer",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
-    # ================= PAID (SYNC KE KINGZAA) =================
-    elif data == "paid":
+    # ================= CONFIRM PAYMENT =================
+    elif data == "confirm_pay":
         if uid not in pending_payment:
             await query.edit_message_text("❌ Payment expired")
             return
 
-        d = pending_payment[uid]["data"]
-        total_days = d["qty"] * d["days"]
-        expire_time = time.time() + (total_days * 86400)
-
-        # 🔥 SYNC KE KINGZAA DATABASE
-        groups_col.update_one(
-            {"chat_id": "GLOBAL"},
-            {
-                "$set": {
-                    # PREMIUM
-                    f"premium_users.{uid}": {
-                        "name": query.from_user.first_name,
-                        "paket": d["paket"],
-                        "expire": expire_time
-                    },
-
-                    # LIST USER (ACCESS BOT)
-                    f"allowed_users.{uid}": query.from_user.first_name.lower()
-                }
-            },
-            upsert=True
-        )
-
-        pending_payment.pop(uid, None)
-        pending_sewa.pop(uid, None)
+        waiting_group_id[uid] = pending_payment[uid]["data"]
 
         await query.edit_message_text(
-            "✅ PAYMENT BERHASIL\n\n🔥 USER MASUK LIST PREMIUM + LIST USER KINGZAA"
+            "📌 SILAHKAN MASUKKAN ID GRUP\n\n"
+            "Kirim ID grup tempat bot akan diaktifkan."
         )
+        return
+
+    # ================= APPROVE / REJECT =================
+    if data.startswith("approve_") or data.startswith("reject_"):
+        if query.from_user.id != OWNER_ID:
+            await query.answer("Khusus owner")
+            return
+
+        target_id = data.split("_")[1]
+
+        if target_id not in pending_approval:
+            await query.edit_message_text("Data sudah expired")
+            return
+
+        data_user = pending_approval[target_id]
+
+        if data.startswith("approve_"):
+            premium_data = {
+                "user_id": target_id,
+                "name": data_user["name"],
+                "paket": data_user["paket"],
+                "group_id": data_user["group_id"],
+                "expire": data_user["expire"]
+            }
+
+            premium_col.update_one(
+                {"user_id": target_id},
+                {"$set": premium_data},
+                upsert=True
+            )
+
+            await context.bot.send_message(
+                chat_id=int(target_id),
+                text="✅ PREMIUM AKTIF 🔥"
+            )
+
+            await query.edit_message_text("USER DIAPPROVE")
+
+        else:
+            await context.bot.send_message(
+                chat_id=int(target_id),
+                text="❌ PREMIUM GAGAL"
+            )
+
+            await query.edit_message_text("USER DITOLAK")
+
+        pending_approval.pop(target_id, None)
         return
 
     # ================= UI UPDATE =================
@@ -177,12 +210,55 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# ================= HANDLE GROUP ID =================
+async def handle_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.message.from_user.id)
+
+    if uid not in waiting_group_id:
+        return
+
+    group_id = update.message.text
+    d = waiting_group_id[uid]
+
+    pending_approval[uid] = {
+        "name": update.message.from_user.first_name,
+        "paket": d["paket"],
+        "group_id": group_id,
+        "expire": time.time() + (d["qty"] * d["days"] * 86400)
+    }
+
+    waiting_group_id.pop(uid, None)
+    pending_payment.pop(uid, None)
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_{uid}"),
+            InlineKeyboardButton("❌ REJECT", callback_data=f"reject_{uid}")
+        ]
+    ]
+
+    await context.bot.send_message(
+        chat_id=OWNER_ID,
+        text=(
+            "💰 KONFIRMASI PEMBAYARAN\n\n"
+            f"User: {update.message.from_user.first_name}\n"
+            f"ID User: {uid}\n"
+            f"ID Grup: {group_id}\n"
+            f"Paket: {d['paket']}\n"
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+    await update.message.reply_text("⏳ Menunggu konfirmasi owner...")
+
 # ================= MAIN =================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("sewabot", sewabot))
-app.add_handler(CallbackQueryHandler(callback_router))
 
-print("🤖 BOT KESUK RUNNING...")
+app.add_handler(CallbackQueryHandler(callback_router))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_id))
+
+print("BOT KESUK RUNNING...")
 app.run_polling()
