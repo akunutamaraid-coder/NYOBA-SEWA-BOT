@@ -228,7 +228,5 @@ app.add_handler(CommandHandler("cekidgrup", cekidgrup))
 
 app.add_handler(CallbackQueryHandler(callback_router))
 app.add_handler(CallbackQueryHandler(owner_callback, pattern="^(approve_|reject_)"))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
 print("BOT KESUK RUNNING...")
 app.run_polling(drop_pending_updates=True)
