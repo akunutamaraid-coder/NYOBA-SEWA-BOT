@@ -22,12 +22,12 @@ MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = 6818257079
 OWNER_USERNAME = "@KINGZAAASLI"
 
-# ================= DATABASE (SHARED) =================
+# ================= DATABASE =================
 client = MongoClient(MONGO_URI)
 db = client["telegram_bot"]
 groups_col = db["groups"]
 
-# ================= MEMORY SEWA =================
+# ================= MEMORY =================
 pending_sewa = {}
 pending_payment = {}
 
@@ -52,7 +52,6 @@ async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= AUTO CANCEL =================
 async def auto_cancel(uid: int):
     await asyncio.sleep(300)
-
     pending_payment.pop(uid, None)
     pending_sewa.pop(uid, None)
 
@@ -118,7 +117,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ================= PAID (CONNECT KE KINGZAA) =================
+    # ================= PAID (SYNC KE KINGZAA) =================
     elif data == "paid":
         if uid not in pending_payment:
             await query.edit_message_text("❌ Payment expired")
@@ -126,19 +125,22 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         d = pending_payment[uid]["data"]
         total_days = d["qty"] * d["days"]
-
         expire_time = time.time() + (total_days * 86400)
 
-        # ================= PUSH KE MONGO (KINGZAA READS THIS) =================
+        # 🔥 SYNC KE KINGZAA DATABASE
         groups_col.update_one(
             {"chat_id": "GLOBAL"},
             {
                 "$set": {
+                    # PREMIUM
                     f"premium_users.{uid}": {
                         "name": query.from_user.first_name,
                         "paket": d["paket"],
                         "expire": expire_time
-                    }
+                    },
+
+                    # LIST USER (ACCESS BOT)
+                    f"allowed_users.{uid}": query.from_user.first_name.lower()
                 }
             },
             upsert=True
@@ -148,7 +150,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_sewa.pop(uid, None)
 
         await query.edit_message_text(
-            "✅ PAYMENT BERHASIL\n\n🔥 PREMIUM AKTIF DI BOT KINGZAA"
+            "✅ PAYMENT BERHASIL\n\n🔥 USER MASUK LIST PREMIUM + LIST USER KINGZAA"
         )
         return
 
