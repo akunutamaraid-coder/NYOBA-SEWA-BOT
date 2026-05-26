@@ -20,12 +20,12 @@ MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = 6818257079
 OWNER_USERNAME = "@KINGZAAASLI"
 
-# ================= DATABASE (SHARED KINGZAA) =================
+# ================= DB =================
 client = MongoClient(MONGO_URI)
 db = client["telegram_bot"]
 groups_col = db["groups"]
 
-# ================= MEMORY KESUK =================
+# ================= MEMORY =================
 pending_sewa = {}
 pending_payment = {}
 pending_group = {}
@@ -48,129 +48,140 @@ async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================= AUTO CANCEL =================
-async def auto_cancel(uid: int):
+async def auto_cancel(uid):
     await asyncio.sleep(300)
     pending_sewa.pop(uid, None)
     pending_payment.pop(uid, None)
     pending_group.pop(uid, None)
 
-# ================= CALLBACK =================
+# ================= CALLBACK (FIXED ANTI DIAM) =================
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    query = update.callback_query
-    await query.answer()
+    try:
+        query = update.callback_query
+        await query.answer()
 
-    uid = query.from_user.id
-    data = query.data
+        data = query.data
+        uid = query.from_user.id
 
-    # ================= PILIH PAKET =================
-    if data == "mingguan":
-        pending_sewa[uid] = {
-            "paket": "MINGGUAN",
-            "days": 7,
-            "harga": 5000
-        }
+        print("DEBUG CALLBACK:", data)
 
-    elif data == "bulanan":
-        pending_sewa[uid] = {
-            "paket": "BULANAN",
-            "days": 30,
-            "harga": 15000
-        }
+        # ================= PILIH PAKET =================
+        if data == "mingguan":
+            pending_sewa[uid] = {
+                "paket": "MINGGUAN",
+                "days": 7,
+                "harga": 5000
+            }
 
-    # ================= BUY =================
-    elif data == "buy":
+            await query.edit_message_text("📆 MINGGUAN DIPILIH\nKlik BUY")
 
-        if uid not in pending_sewa:
-            await query.edit_message_text("❌ Pilih paket dulu")
-            return
+        elif data == "bulanan":
+            pending_sewa[uid] = {
+                "paket": "BULANAN",
+                "days": 30,
+                "harga": 15000
+            }
 
-        d = pending_sewa[uid]
+            await query.edit_message_text("📅 BULANAN DIPILIH\nKlik BUY")
 
-        pending_payment[uid] = {
-            "data": d,
-            "time": time.time()
-        }
+        elif data == "buy":
 
-        asyncio.create_task(auto_cancel(uid))
+            if uid not in pending_sewa:
+                await query.edit_message_text("❌ PILIH PAKET DULU")
+                return
 
-        await query.edit_message_text(
-            f"💳 PAYMENT\n\n"
-            f"📦 {d['paket']}\n"
-            f"💰 Rp{d['harga']}\n\n"
-            f"DANA: 085609264485\n\n"
-            "Klik sudah bayar jika sudah transfer",
-            reply_markup=InlineKeyboardMarkup([
+            d = pending_sewa[uid]
+
+            pending_payment[uid] = {
+                "data": d,
+                "time": time.time()
+            }
+
+            asyncio.create_task(auto_cancel(uid))
+
+            keyboard = [
                 [InlineKeyboardButton("✅ SUDAH BAYAR", callback_data="paid")]
-            ])
-        )
+            ]
 
-    # ================= PAID =================
-    elif data == "paid":
+            await query.edit_message_text(
+                f"💳 PAYMENT\n\n"
+                f"📦 {d['paket']}\n"
+                f"💰 Rp{d['harga']}\n\n"
+                f"DANA: 085609264485\n",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
-        if uid not in pending_payment:
-            await query.edit_message_text("❌ Payment expired")
-            return
+        elif data == "paid":
 
-        d = pending_payment[uid]["data"]
+            if uid not in pending_payment:
+                await query.edit_message_text("❌ PAYMENT EXPIRED")
+                return
 
-        pending_payment.pop(uid)
+            d = pending_payment[uid]["data"]
 
-        pending_group[uid] = {
-            "data": d
-        }
+            pending_group[uid] = {
+                "data": d
+            }
 
-        await query.edit_message_text(
-            "📩 KIRIM ID GRUP SEKARANG\n\n"
-            "Contoh: /setgrup -100123456789"
-        )
+            pending_payment.pop(uid)
 
-    # ================= APPROVE OWNER =================
-    elif data.startswith("approve_"):
+            await query.edit_message_text(
+                "📩 KIRIM ID GRUP SEKARANG\n\n"
+                "Gunakan:\n/setgrup -100xxxx"
+            )
 
-        target_uid = int(data.split("_")[1])
+        elif data.startswith("approve_"):
 
-        if target_uid not in pending_group:
-            await query.edit_message_text("❌ DATA HILANG")
-            return
+            target_uid = int(data.split("_")[1])
 
-        d = pending_group[target_uid]["data"]
-        gid = pending_group[target_uid]["group_id"]
+            if target_uid not in pending_group:
+                await query.edit_message_text("❌ DATA HILANG")
+                return
 
-        expire_time = time.time() + (d["days"] * 86400)
+            d = pending_group[target_uid]["data"]
+            gid = pending_group[target_uid]["group_id"]
 
-        # 🔥 INI AUTO SYNC KE KINGZAA
-        groups_col.update_one(
-            {"chat_id": str(gid)},
-            {
-                "$set": {
-                    f"premium_users.{target_uid}": {
-                        "name": d["paket"],
-                        "expire": expire_time
+            expire = time.time() + (d["days"] * 86400)
+
+            # 🔥 SYNC KE KINGZAA
+            groups_col.update_one(
+                {"chat_id": str(gid)},
+                {
+                    "$set": {
+                        f"premium_users.{target_uid}": {
+                            "name": d["paket"],
+                            "expire": expire
+                        }
                     }
-                }
-            },
-            upsert=True
-        )
+                },
+                upsert=True
+            )
 
-        pending_group.pop(target_uid)
+            pending_group.pop(target_uid)
 
-        await query.edit_message_text("✅ APPROVED & ACTIVE DI KINGZAA")
+            await query.edit_message_text("✅ APPROVED + ACTIVE (KINGZAA)")
 
-    # ================= REJECT =================
-    elif data.startswith("reject_"):
+        elif data.startswith("reject_"):
 
-        target_uid = int(data.split("_")[1])
-        pending_group.pop(target_uid, None)
+            target_uid = int(data.split("_")[1])
+            pending_group.pop(target_uid, None)
 
-        await query.edit_message_text("❌ REJECTED")
+            await query.edit_message_text("❌ REJECTED")
+
+        else:
+            await query.edit_message_text(f"❌ CALLBACK UNKNOWN: {data}")
+
+    except Exception as e:
+        print("ERROR CALLBACK:", e)
+        await update.callback_query.edit_message_text(f"ERROR: {e}")
 
 # ================= SET GRUP =================
 async def setgrup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     uid = update.message.from_user.id
 
-    if uid not in pending_group and uid not in pending_payment:
+    if uid not in pending_payment and uid not in pending_group:
         return await update.message.reply_text("❌ Tidak ada transaksi")
 
     if len(context.args) < 1:
@@ -178,11 +189,13 @@ async def setgrup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     gid = context.args[0]
 
-    # ambil data dari pending
     if uid in pending_group:
         d = pending_group[uid]["data"]
     else:
-        d = pending_sewa[uid]
+        d = pending_sewa.get(uid)
+
+    if not d:
+        return await update.message.reply_text("❌ Data hilang")
 
     pending_group[uid] = {
         "data": d,
@@ -213,5 +226,5 @@ app.add_handler(CommandHandler("setgrup", setgrup))
 
 app.add_handler(CallbackQueryHandler(callback_router))
 
-print("KESUK BOT RUNNING (SYNC KINGZAA)")
+print("KESUK BOT RUNNING FIXED VERSION 🚀")
 app.run_polling()
