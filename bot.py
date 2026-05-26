@@ -1,7 +1,7 @@
 import os
 import time
-import logging
 import asyncio
+import logging
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -11,18 +11,25 @@ from telegram.ext import (
     ContextTypes
 )
 
+from pymongo import MongoClient
+
 logging.basicConfig(level=logging.INFO)
 
+# ================= CONFIG =================
 TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
 
 OWNER_ID = 6818257079
 OWNER_USERNAME = "@KINGZAAASLI"
-BOT_USERNAME = "YOUR_BOT_USERNAME"
 
-# ================= MEMORY =================
-pending_sewa = {}        # user sementara pilih paket
-pending_payment = {}     # user sudah ke payment (WAITING)
-premium_users = {}       # user aktif premium
+# ================= DATABASE (SHARED) =================
+client = MongoClient(MONGO_URI)
+db = client["telegram_bot"]
+groups_col = db["groups"]
+
+# ================= MEMORY SEWA =================
+pending_sewa = {}
+pending_payment = {}
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -38,27 +45,24 @@ async def sewabot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "Pilih paket:",
+        "💎 PILIH PAKET SEWA:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ================= AUTO CANCEL =================
 async def auto_cancel(uid: int):
-    await asyncio.sleep(300)  # 5 menit
+    await asyncio.sleep(300)
 
-    if uid in pending_payment:
-        pending_payment.pop(uid, None)
-        pending_sewa.pop(uid, None)
+    pending_payment.pop(uid, None)
+    pending_sewa.pop(uid, None)
 
 # ================= CALLBACK =================
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
     uid = query.from_user.id
-
-    logging.info(f"CALLBACK: {data}")
+    data = query.data
 
     # ================= PILIH PAKET =================
     if data == "paket_mingguan":
@@ -114,26 +118,37 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ================= PAID =================
+    # ================= PAID (CONNECT KE KINGZAA) =================
     elif data == "paid":
         if uid not in pending_payment:
-            await query.edit_message_text("❌ Payment expired / tidak ditemukan")
+            await query.edit_message_text("❌ Payment expired")
             return
 
         d = pending_payment[uid]["data"]
         total_days = d["qty"] * d["days"]
 
-        premium_users[str(uid)] = {
-            "name": query.from_user.first_name,
-            "paket": d["paket"],
-            "expire": time.time() + (total_days * 86400)
-        }
+        expire_time = time.time() + (total_days * 86400)
+
+        # ================= PUSH KE MONGO (KINGZAA READS THIS) =================
+        groups_col.update_one(
+            {"chat_id": "GLOBAL"},
+            {
+                "$set": {
+                    f"premium_users.{uid}": {
+                        "name": query.from_user.first_name,
+                        "paket": d["paket"],
+                        "expire": expire_time
+                    }
+                }
+            },
+            upsert=True
+        )
 
         pending_payment.pop(uid, None)
         pending_sewa.pop(uid, None)
 
         await query.edit_message_text(
-            "✅ PAYMENT BERHASIL\n\nKamu sekarang PREMIUM 🔥"
+            "✅ PAYMENT BERHASIL\n\n🔥 PREMIUM AKTIF DI BOT KINGZAA"
         )
         return
 
@@ -160,40 +175,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= LIST PREMIUM =================
-async def listpremium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != OWNER_ID:
-        return await update.message.reply_text("KHUSUS OWNER")
-
-    if not premium_users:
-        return await update.message.reply_text("LIST PREMIUM KOSONG")
-
-    text = "📌 LIST PREMIUM:\n\n"
-
-    for uid, data in premium_users.items():
-        if data["expire"] == -1:
-            status = "SELAMANYA"
-        else:
-            sisa = int((data["expire"] - time.time()) / 86400)
-            status = f"{sisa} hari"
-
-        text += (
-            f"👤 {data['name']}\n"
-            f"🆔 {uid}\n"
-            f"📦 {data['paket']}\n"
-            f"⏳ {status}\n\n"
-        )
-
-    await update.message.reply_text(text)
-
 # ================= MAIN =================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("sewabot", sewabot))
-app.add_handler(CommandHandler("listpremium", listpremium))
-
 app.add_handler(CallbackQueryHandler(callback_router))
 
-print("BOT RUNNING...")
+print("🤖 BOT KESUK RUNNING...")
 app.run_polling()
